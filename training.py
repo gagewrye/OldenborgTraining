@@ -9,9 +9,11 @@ def get_action_from_filename(filename):
 
 
 def main():
-    dataset_path = Path(
-        args.dataset
-    )
+    arg_parser = ArgumentParser("Train a model")
+    arg_parser.add_argument("dataset", type=str, help="dataset location")
+    args = arg_parser.parse_args()
+
+    dataset_path = Path(args.dataset)
     path = Path(os.getcwd())
     filenames = get_image_files(dataset_path)
     dls = ImageDataLoaders.from_name_func(
@@ -31,10 +33,6 @@ def main():
     learn.fine_tune(5)
 
     learn.export("./models/testModel.pkl")
-
-    argparser = ArgumentParser("Train a model")
-    argparser.add_argument("dataset", type=str, help="dataset location")
-    args = argparser.parse_args()
 
 
 if __name__ == "__main__":
