@@ -10,7 +10,7 @@ def get_action_from_filename(filename):
 
 def main():
     arg_parser = ArgumentParser("Train a model")
-    arg_parser.add_argument("dataset", type=str, help="dataset location")
+    arg_parser.add_argument("--dataset", type=str, help="dataset location")
     args = arg_parser.parse_args()
 
     dataset_path = Path(args.dataset)
