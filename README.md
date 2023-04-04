@@ -8,5 +8,5 @@ Must have fastai installed.
 ## Training a Model
 
 ~~~bash
-python training.py --dataset <dataset>
+python training.py --dataset /<dataset>
 ~~~
