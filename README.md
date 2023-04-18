@@ -14,3 +14,11 @@ To train all models listed in the run_training.py script, run the following:
 ~~~bash
 python run_training.py
 ~~~
+
+## Inference
+
+After copying over trained models into a folder called "models" in the cloned OldenborgTraining repository, run the following command to test:
+
+~~~bash
+python inference.py <model> <port> <path to folder where all UE5 projects are stored>
+~~~
