@@ -29,8 +29,6 @@ def main():
     args = argparser.parse_args()
 
     env = UE5EnvWrapper(port=args.port)
-    # TODO make this work
-    # learn = create_vision_model(resnet18, n_out=3)
     learn = load_learner(f"./models/{args.model}")
 
     # path to where UE5 saves projects
@@ -43,17 +41,18 @@ def main():
     screenshot_folder = "Screenshots"
     project_screenshot_path = project_saved_path + "\\" + screenshot_folder
 
+    # check existence of screenshots folder and error out if folder exists
     image_folder = os.path.join(project_path, project_screenshot_path)
     if (os.path.isdir(image_folder)):
         sys.exit("ERROR: The \"Screenshots\" folder exists in the Saved directory of UE5 connected project file, please delete this folder and run again.")
 
-    # movement_increment = 50
+    movement_increment = 0.0001    # TODO: once forward and back functions fixed, update accordingly
     rotation_increment = radians(5)
+
     image_num = 0
     while env.is_connected():
         env.save_image(0)
         image_path = os.path.join(image_folder, 'WindowsEditor\HighresScreenshot{num:0{width}}.png'.format(num=image_num, width=5))
-        print(image_path)
         clss, clss_idx, probs = learn.predict(image_path)
         print(clss)
         if clss == "right":
@@ -61,13 +60,14 @@ def main():
         elif clss == "left":
             env.left(rotation_increment)
         elif clss == "forward":
-            env.forward()
+            env.forward(movement_increment)
         elif clss == "back":
-            env.back()
+            env.back(movement_increment)
         image_num += 1
-        if image_num == 3: break
         sleep(1)
+    env.reset()
 
+    # create new folder for screenshots based on time of inference completion and move images there
     os.chdir(os.path.join(project_path, project_saved_path))
     current_time = time.localtime()
     new_folder_name = screenshot_folder + time.strftime("-%Y-%m-%d-%H%M", current_time)
