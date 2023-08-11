@@ -9,6 +9,7 @@ from pathlib import Path
 
 # import matplotlib.pyplot as plt
 import torch
+import wandb
 from fastai.callback.wandb import WandbCallback
 from fastai.data.all import (
     CategoryBlock,
@@ -23,8 +24,6 @@ from fastai.vision.learner import Learner, accuracy, vision_learner
 from fastai.vision.models import resnet18, resnet34
 from fastai.vision.utils import get_image_files
 from torch import nn
-
-import wandb
 
 # NOTE: we can change/add to this list
 compared_models = {"resnet18": resnet18, "resnet34": resnet34}
@@ -126,7 +125,7 @@ def y_from_filename(rotation_threshold, filename) -> str:
 def get_dls(args: Namespace, data_path: str):
     # NOTE: not allowed to add a type annotation to the input
 
-    image_filenames = get_image_files(data_path)
+    image_filenames: list = get_image_files(data_path)  # type:ignore
 
     # Using a partial function to set the rotation_threshold from args
     label_func = partial(y_from_filename, args.rotation_threshold)
