@@ -84,6 +84,7 @@ def main():
             print(f"Moving {action_to_take} with probabilities {action_prob:.2f}")
 
             # Take action
+            # TODO: prevent cycling actions (e.g., left followed by right)
             match action_to_take:
                 case "forward":
                     ue.move_forward(args.movement_amount)
