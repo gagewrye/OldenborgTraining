@@ -222,6 +222,7 @@ def train_model(dls: DataLoaders, args: Namespace, rep: int):
     else:
         learn.fit_one_cycle(args.num_epochs)
 
+    # TODO: remove the callbacks before exporting so they are not require on loading?
     learn.export(f"models/{args.name}_rep{rep:02}.pkl")
 
 
