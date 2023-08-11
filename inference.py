@@ -5,6 +5,8 @@ from pathlib import Path
 from fastai.vision.learner import load_learner
 from ue5osc import Communicator
 
+from utils import y_from_filename  # noqa: F401
+
 
 def parse_args():
     arg_parser = ArgumentParser("Track performance of trained networks.")
