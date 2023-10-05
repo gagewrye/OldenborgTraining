@@ -30,36 +30,29 @@ compared_models = {"resnet18": resnet18, "resnet34": resnet34}
 
 
 def parse_args() -> Namespace:
-    arg_parser = ArgumentParser("Train cmd classification networks.")
-    arg_parser.add_argument("name", type=str, help="Short name for the run")
-    arg_parser.add_argument(
-        "model_arch", type=str, help="Model architecture (see code for options)"
-    )
+    arg_parser = ArgumentParser("Train command classification networks.")
+
+    # Wandb configuration
+    arg_parser.add_argument("wandb_name", help="Name of run and artifact.")
+    arg_parser.add_argument("wandb_project", help="Wandb project name.")
+    arg_parser.add_argument("wandb_notes", help="Wandb run description.")
+
+    # Model configuration
+    arg_parser.add_argument("model_arch", help="Model architecture (see code).")
     arg_parser.add_argument(
         "--use_command_image",
         action="store_true",
-        help="Use the command+image input model",
+        help="Use the command+image input model.",
     )
-    # TODO: accept dataset name as argument
-    # arg_parser.add_argument("dataset_name", help="Name of dataset to use")
+
+    # Dataset configuration
+    arg_parser.add_argument("dataset_name", help="Name of dataset to use.")
     arg_parser.add_argument(
-        "--pretrained", action="store_true", help="Use pretrained model"
+        "--pretrained", action="store_true", help="Use pretrained model."
     )
-    arg_parser.add_argument("--gpu", type=int, default=0, help="GPU to use")
+    arg_parser.add_argument("--gpu", type=int, default=0, help="GPU to use.")
     arg_parser.add_argument(
-        "--valid_pct", type=float, default=0.2, help="Validation percentage"
-    )
-    arg_parser.add_argument(
-        "--num_epochs", type=int, default=10, help="Number of training epochs"
-    )
-    arg_parser.add_argument(
-        "--num_replicates", type=int, default=1, help="Number of replicates to run"
-    )
-    arg_parser.add_argument(
-        "--image_resize", type=int, default=None, help="The size of image training data"
-    )
-    arg_parser.add_argument(
-        "--batch_size", type=int, default=64, help="Training batch size"
+        "--valid_pct", type=float, default=0.2, help="Validation percentage."
     )
     arg_parser.add_argument(
         "--rotation_threshold",
@@ -68,7 +61,24 @@ def parse_args() -> Namespace:
         help="Threshold in radians for classifying rotation as left/right or forward.",
     )
     arg_parser.add_argument(
-        "--local_data", type=str, help="Path to local data directory"
+        "--local_data", action="store_true", help="Data is stored locally."
+    )
+
+    # Training configuration
+    arg_parser.add_argument(
+        "--num_epochs", type=int, default=10, help="Number of training epochs."
+    )
+    arg_parser.add_argument(
+        "--num_replicates", type=int, default=1, help="Number of replicates to run."
+    )
+    arg_parser.add_argument(
+        "--image_resize",
+        type=int,
+        default=None,
+        help="The size of image training data.",
+    )
+    arg_parser.add_argument(
+        "--batch_size", type=int, default=64, help="Training batch size."
     )
 
     return arg_parser.parse_args()
@@ -76,11 +86,11 @@ def parse_args() -> Namespace:
 
 def setup_wandb(args: Namespace):
     run = wandb.init(
-        name=args.name,
-        project="scr2023-training",
         entity="arcslaboratory",
-        notes="Training models for SCR2023 abstract",
         job_type="train",
+        name=args.wandb_name,
+        project=args.wandb_project,
+        notes=args.wandb_notes,
     )
 
     if run is None:
