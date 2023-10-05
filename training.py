@@ -85,26 +85,26 @@ def parse_args() -> Namespace:
 
 
 def setup_wandb(args: Namespace):
+    wandb_entity = "arcslaboratory"
+    wandb_project = args.wandb_project
+    wandb_name = args.wandb_name
+    wandb_notes = args.wandb_notes
+
     run = wandb.init(
-        entity="arcslaboratory",
         job_type="train",
-        name=args.wandb_name,
-        project=args.wandb_project,
-        notes=args.wandb_notes,
+        entity=wandb_entity,
+        name=wandb_name,
+        project=wandb_project,
+        notes=wandb_notes,
     )
 
     if run is None:
         raise Exception("wandb.init() failed")
 
-    # Load the dataset artifact
-
     if args.local_data:
         data_dir = args.local_data
     else:
-        # TODO: use args to get dataset artifact name
-        artifact = run.use_artifact(
-            "arcslaboratory/wandering-random-2K+/07-26_wandering_10Trials_randomized:latest"
-        )
+        artifact = run.use_artifact(f"{wandb_name}:latest")
         data_dir = artifact.download()
 
     return run, data_dir
