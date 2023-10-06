@@ -1,7 +1,6 @@
 import pathlib
 from argparse import ArgumentParser
 from contextlib import contextmanager
-from math import radians
 from pathlib import Path
 from time import sleep
 
@@ -53,6 +52,9 @@ def main():
 
     # NOTE: This is a workaround for a bug in fastai/pathlib on Windows
     with set_posix_windows():
+        # TODO: should we use to download model from wandb?
+        #    run = wandb.init(...)
+        #    run.use_artifact
         model = load_learner(args.model)
 
     # TODO: temporary fix? (we might remove callback on training side)

@@ -9,7 +9,6 @@ from pathlib import Path
 
 # import matplotlib.pyplot as plt
 import torch
-import wandb
 from fastai.callback.wandb import WandbCallback
 from fastai.data.all import (
     CategoryBlock,
@@ -24,6 +23,8 @@ from fastai.vision.learner import Learner, accuracy, vision_learner
 from fastai.vision.models import resnet18, resnet34
 from fastai.vision.utils import get_image_files
 from torch import nn
+
+import wandb
 
 # NOTE: we can change/add to this list
 compared_models = {"resnet18": resnet18, "resnet34": resnet34}
@@ -233,7 +234,7 @@ def train_model(dls: DataLoaders, args: Namespace, rep: int):
         learn.fit_one_cycle(args.num_epochs)
 
     # TODO: remove the callbacks before exporting so they are not require on loading?
-    learn.export(f"models/{args.name}_rep{rep:02}.pkl")
+    learn.export(f"models/{args.wandb_name}_rep{rep:02}.pkl")
 
 
 class ImageCommandModel(nn.Module):
