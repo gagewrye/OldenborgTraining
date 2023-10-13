@@ -1,4 +1,5 @@
 import pathlib
+import platform
 from argparse import ArgumentParser
 from contextlib import contextmanager
 from pathlib import Path
@@ -8,11 +9,13 @@ from fastai.callback.wandb import WandbCallback
 from fastai.vision.learner import load_learner
 from ue5osc import Communicator
 
+import wandb
 from utils import y_from_filename  # noqa: F401 (needed for fastai load_learner)
 
 
 @contextmanager
 def set_posix_windows():
+    # NOTE: This is a workaround for a bug in fastai/pathlib on Windows
     posix_backup = pathlib.PosixPath
     try:
         pathlib.PosixPath = pathlib.WindowsPath
@@ -23,7 +26,13 @@ def set_posix_windows():
 
 def parse_args():
     arg_parser = ArgumentParser("Track performance of trained networks.")
-    arg_parser.add_argument("model", help="Path to the model to evaluate.")
+
+    # Wandb configuration
+    arg_parser.add_argument("wandb_name", help="Name of run inference results.")
+    arg_parser.add_argument("wandb_project", help="Wandb project name.")
+    arg_parser.add_argument("wandb_notes", help="Wandb run description.")
+    arg_parser.add_argument("wandb_model", help="Path to the model to evaluate.")
+
     arg_parser.add_argument("output_dir", help="Directory to store saved images.")
     arg_parser.add_argument(
         "--movement_amount",
@@ -34,9 +43,8 @@ def parse_args():
     arg_parser.add_argument(
         "--rotation_amount",
         type=float,
-        # default=radians(10),
         default=10.0,
-        help="Rotation per action.",
+        help="Rotation per action (in degrees for ue5osc).",
     )
     arg_parser.add_argument(
         "--max-actions",
@@ -50,12 +58,38 @@ def parse_args():
 def main():
     args = parse_args()
 
-    # NOTE: This is a workaround for a bug in fastai/pathlib on Windows
-    with set_posix_windows():
-        # TODO: should we use to download model from wandb?
-        #    run = wandb.init(...)
-        #    run.use_artifact
-        model = load_learner(args.model)
+    wandb_entity = "arcslaboratory"
+    wandb_project = args.wandb_project
+    wandb_name = args.wandb_name
+    wandb_notes = args.wandb_notes
+    wandb_model = args.wandb_model
+
+    run = wandb.init(
+        job_type="inference",
+        entity=wandb_entity,
+        name=wandb_name,
+        project=wandb_project,
+        notes=wandb_notes,
+    )
+
+    if run is None:
+        raise Exception("wandb.init() failed")
+
+    # Download the fastai learner
+    artifact = run.use_artifact(f"{wandb_model}:latest", type="model")
+    model_dir = artifact.download()
+    model_filename = Path(model_dir) / wandb_model
+
+    # Load the learner and its model
+    if platform.system() == "Windows":
+        with set_posix_windows():
+            model = load_learner(model_filename)
+    else:
+        model = load_learner(model_filename)
+
+    print(model.predict)
+
+    raise SystemExit
 
     # TODO: temporary fix? (we might remove callback on training side)
     model.remove_cb(WandbCallback)

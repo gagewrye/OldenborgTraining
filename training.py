@@ -7,6 +7,7 @@ from functools import partial
 from math import radians
 from pathlib import Path
 
+# TODO: log plots as artifacts?
 # import matplotlib.pyplot as plt
 import torch
 from fastai.callback.wandb import WandbCallback
@@ -18,6 +19,7 @@ from fastai.data.all import (
     RegressionBlock,
 )
 from fastai.losses import CrossEntropyLossFlat
+from fastai.vision.augment import Resize
 from fastai.vision.data import ImageBlock, ImageDataLoaders
 from fastai.vision.learner import Learner, accuracy, vision_learner
 from fastai.vision.models import resnet18, resnet34
@@ -34,7 +36,7 @@ def parse_args() -> Namespace:
     arg_parser = ArgumentParser("Train command classification networks.")
 
     # Wandb configuration
-    arg_parser.add_argument("wandb_name", help="Name of run and artifact.")
+    arg_parser.add_argument("wandb_name", help="Name of run and trained model.")
     arg_parser.add_argument("wandb_project", help="Wandb project name.")
     arg_parser.add_argument("wandb_notes", help="Wandb run description.")
 
@@ -75,7 +77,7 @@ def parse_args() -> Namespace:
     arg_parser.add_argument(
         "--image_resize",
         type=int,
-        default=None,
+        default=244,
         help="The size of image training data.",
     )
     arg_parser.add_argument(
@@ -105,7 +107,7 @@ def setup_wandb(args: Namespace):
     if args.local_data:
         data_dir = args.local_data
     else:
-        artifact = run.use_artifact(f"{wandb_name}:latest")
+        artifact = run.use_artifact(f"{args.dataset_name}:latest")
         data_dir = artifact.download()
 
     return run, data_dir
@@ -117,7 +119,7 @@ def get_angle_from_filename(filename: str) -> float:
     return angle
 
 
-def y_from_filename(rotation_threshold, filename) -> str:
+def y_from_filename(rotation_threshold: float, filename: str) -> str:
     """Extracts the direction label from the filename of an image.
 
     Example: "path/to/file/001_000011_-1p50.png" --> "right"
@@ -153,7 +155,7 @@ def get_dls(args: Namespace, data_path: str):
             valid_pct=args.valid_pct,
             shuffle=True,
             bs=args.batch_size,
-            # item_tfms=Resize(224)
+            item_tfms=Resize(args.image_resize),
         )
 
 
@@ -202,12 +204,12 @@ def run_experiment(args: Namespace, run, dls):
 
     learn = None
     for rep in range(args.num_replicates):
-        learn = train_model(dls, args, rep)
+        learn = train_model(dls, args, run, rep)
 
     return learn
 
 
-def train_model(dls: DataLoaders, args: Namespace, rep: int):
+def train_model(dls: DataLoaders, args: Namespace, run, rep: int):
     """Train the cmd_model using the provided data and hyperparameters."""
 
     if args.use_command_image:
@@ -233,8 +235,18 @@ def train_model(dls: DataLoaders, args: Namespace, rep: int):
     else:
         learn.fit_one_cycle(args.num_epochs)
 
-    # TODO: remove the callbacks before exporting so they are not require on loading?
-    learn.export(f"models/{args.wandb_name}_rep{rep:02}.pkl")
+    wandb_name = args.wandb_name
+    model_arch = args.model_arch
+    dataset_name = args.dataset_name
+
+    learn_name = f"{wandb_name}-{model_arch}-{dataset_name}-rep{rep:02}"
+    learn_filename = learn_name + ".pkl"
+    learn.export(learn_filename)
+
+    learn_path = learn.path / learn_filename
+    artifact = wandb.Artifact(name=learn_name, type="model")
+    artifact.add_file(local_path=learn_path)
+    run.log_artifact(artifact)
 
 
 class ImageCommandModel(nn.Module):
