@@ -81,15 +81,13 @@ def main():
     model_filename = Path(model_dir) / wandb_model
 
     # Load the learner and its model
+    # TODO: this doesn't load the "best" model, but the last one
+    # We should probably also download the weights and load them manually
     if platform.system() == "Windows":
         with set_posix_windows():
             model = load_learner(model_filename)
     else:
         model = load_learner(model_filename)
-
-    print(model.predict)
-
-    raise SystemExit
 
     # TODO: temporary fix? (we might remove callback on training side)
     model.remove_cb(WandbCallback)
