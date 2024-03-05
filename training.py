@@ -25,6 +25,10 @@ from fastai.vision.learner import Learner, accuracy, vision_learner
 from fastai.vision.models import resnet18, resnet34
 from fastai.vision.utils import get_image_files
 from torch import nn
+from torch.nn import TransformerEncoder, TransformerEncoderLayer
+from torchvision.models import resnet18
+from torchvision.transforms import Normalize, ToTensor, Compose
+from fastai.vision.augment import aug_transforms
 
 import wandb
 
@@ -284,6 +288,49 @@ class ImageCommandModel(nn.Module):
         # The loss function applies softmax to the output of the model
         return x
 
+
+class ImageActionTransformer(nn.Module):
+    def __init__(self, num_encoder_layers=6, nhead=8, d_model=512, dim_feedforward=2048, dropout=0.1, pretrained=True):
+        super(ImageActionTransformer, self).__init__()
+        # Use ResNet18 for image feature extraction, remove the final layer to get feature vector
+        self.feature_extractor = resnet18(pretrained=pretrained)
+        self.feature_extractor = nn.Sequential(*list(self.feature_extractor.children())[:-1])
+
+        self.action_embedding = nn.Linear(1, d_model // 2) # Assuming action is a scalar, adjust if your actions are vectors
+
+        encoder_layers = TransformerEncoderLayer(d_model=d_model, nhead=nhead, dim_feedforward=dim_feedforward, dropout=dropout)
+        self.transformer_encoder = TransformerEncoder(encoder_layer=encoder_layers, num_layers=num_encoder_layers)
+
+        self.fc = nn.Linear(d_model, 3) # Adjust output features to match your number of classes/actions
+
+        # Normalization and data augmentation for images
+        self.img_transform = Compose([
+            ToTensor(),
+            Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            *aug_transforms()
+        ])
+
+    def forward(self, img, cmd):
+        # Apply transformations and feature extraction to images
+        img = torch.stack([self.img_transform(image) for image in img])
+        img_features = self.feature_extractor(img)
+        img_features = torch.flatten(img_features, 1) # Flatten the feature vectors
+
+        # Embed actions
+        cmd_embed = self.action_embedding(cmd)
+
+        # Combine image features and command embeddings
+        combined_features = torch.cat((img_features, cmd_embed), dim=1)
+
+        # Transformer encoder expects shape: (seq_len, batch, features)
+        combined_features = combined_features.unsqueeze(0) # Assuming a batch-first approach here; adjust as necessary
+
+        transformer_output = self.transformer_encoder(combined_features)
+
+        # Pass the output through a fully connected layer
+        output = self.fc(transformer_output.squeeze(0))
+
+        return output
 
 def main():
     args = parse_args()
