@@ -200,16 +200,26 @@ def get_image_command_category_dataloaders(
         data_path, shuffle=True, batch_size=args.batch_size
     )
 
-
 def run_experiment(args: Namespace, run, dls):
-    torch.cuda.set_device(int(args.gpu))
-    dls.to(torch.cuda.current_device())
-    print("Running on GPU: " + str(torch.cuda.current_device()))
-
+    # Automatically select cuda, mac, or cpu
+    device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
+    
+    # Inform the user which device is being used
+    if device.type == "cuda":
+        torch.cuda.set_device(int(args.gpu)) # If using CUDA, specify GPU
+        print(f"Running on GPU: {torch.cuda.get_device_name(device)}")
+    elif device.type == "mps":
+        print("Running on Apple Metal")
+    else:
+        print("Running on CPU")
+    
+    # Move the DataLoader to device
+    dls.to(device)
+    
     learn = None
     for rep in range(args.num_replicates):
         learn = train_model(dls, args, run, rep)
-
+    
     return learn
 
 
@@ -296,12 +306,12 @@ class ImageActionTransformer(nn.Module):
         self.feature_extractor = resnet18(pretrained=pretrained)
         self.feature_extractor = nn.Sequential(*list(self.feature_extractor.children())[:-1])
 
-        self.action_embedding = nn.Linear(1, d_model // 2) # Assuming action is a scalar, adjust if your actions are vectors
+        self.action_embedding = nn.Linear(1, d_model // 2) # Action is assumed to be scalar
 
         encoder_layers = TransformerEncoderLayer(d_model=d_model, nhead=nhead, dim_feedforward=dim_feedforward, dropout=dropout)
         self.transformer_encoder = TransformerEncoder(encoder_layer=encoder_layers, num_layers=num_encoder_layers)
 
-        self.fc = nn.Linear(d_model, 3) # Adjust output features to match your number of classes/actions
+        self.fc = nn.Linear(d_model, 3) # 3 is number of possible actions, can add more if needed later
 
         # Normalization and data augmentation for images
         self.img_transform = Compose([
