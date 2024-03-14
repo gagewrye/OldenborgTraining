@@ -318,13 +318,13 @@ class CNNFeatureExtractor(nn.Module):
         features = self.feature_extractor(imgs)
         features = torch.flatten(features, start_dim=1)
         
-        # Adapt features to match the model
+        # Adapt features to match the model inputs
         return self.adapt_features(features)
 
 
 class ImageActionTransformer(nn.Module):
     """
-    This is our transformer model! It takes a list of images and their corresponding actions to make a prediction.
+    This is our big transformer model! It takes a list of images and their corresponding actions to make a prediction.
 
     Parameters:
         num_encoder_layers (int): Number of encoder layers in the transformer.
@@ -381,14 +381,14 @@ class ActionLSTM(nn.Module):
     """
     This LSTM model will be used to capture the patterns in the actions for use in prediction alongside images.
 
-    An LSTM is good at 'forgetting' information that is no longer relevant. ex. traveling in a straight line down a hallway
+    A LSTM is good at 'forgetting' information that is no longer relevant. ex. traveling in a straight line down a hallway
     """
-    def __init__(self, input_size=512, num_actions=3, hidden_size=8, num_layers=8): # TODO: Change hidden and layers
+    def __init__(self, num_actions=3, hidden_size=64, num_layers=2):
         super(ActionLSTM, self).__init__()
         self.actions = num_actions
 
         # LSTM Layers
-        self.lstm = nn.LSTM(input_size=input_size, hidden_size=hidden_size, num_layers=num_layers, batch_first=True)
+        self.lstm = nn.LSTM(input_size=num_actions, hidden_size=hidden_size, num_layers=num_layers, batch_first=True)
     
     def forward(self, cmd):
         cmd_embedding = functional.one_hot(cmd.to(torch.int64), self.actions)
@@ -405,14 +405,16 @@ class ImageTransformer(nn.Module):
     We also implement a maximum sequence length to restrict the amount of images processed.
 
     """
-    def __init__(self, num_encoder_layers=2, nhead=4, d_model=512, dim_feedforward=2048, dropout=0.1, num_actions=3, max_sequence_len=16): # TODO: Change params
+    def __init__(self, num_encoder_layers=2, nhead=4, d_model=512, dim_feedforward=2048,
+                  dropout=0.1, num_actions=3, max_sequence_len=16):
         super(ImageTransformer, self).__init__()
         self.actions = num_actions
         self.max_sequence_len = max_sequence_len
         self.cnn = CNNFeatureExtractor(d_model=d_model)
 
         # Transformer Layers
-        encoder_layers = TransformerEncoderLayer(d_model=d_model, nhead=nhead, dim_feedforward=dim_feedforward, dropout=dropout)
+        encoder_layers = TransformerEncoderLayer(d_model=d_model, nhead=nhead,
+                                                  dim_feedforward=dim_feedforward, dropout=dropout)
         self.transformer_encoder = TransformerEncoder(encoder_layer=encoder_layers, num_layers=num_encoder_layers)
 
         # Output Layer
@@ -443,21 +445,48 @@ class ImageTransformer(nn.Module):
         return final_layer[-1]
 
 class HybridModel(nn.Module):
-    def __init__(self, num_encoder_layers=2, nhead=4, d_model=512, dim_feedforward=2048,
-                    dropout=0.1, num_actions=3, max_sequence_len=8, hidden_size_lstm=8, num_layers_lstm=8, input_size_lstm=512 ): # TODO: Change params
-        super(HybridModel, self).__init__()
-        self.transformer = ImageTransformer(num_encoder_layers=num_encoder_layers, nhead=nhead, d_model=d_model,
-                                            dim_feedforward=dim_feedforward, dropout=dropout, num_actions=num_actions,
-                                            max_sequence_len=max_sequence_len)
-        self.lstm = ActionLSTM(input_size=input_size_lstm, hidden_size=hidden_size_lstm, num_actions=num_actions, num_layers=num_layers_lstm)
+    """
+    This model combines both the ImageTransformer and ActionLSTM. It is a more efficient approach
+    than just throwing all of the data into a really big transformer. It uses a small transformer
+    with the same inner workings as the larger one, but it has a maximum sequence cutoff that limits
+    how far back it looks for images. The long term dependencies necessary for exploration are captured 
+    by an lstm that only stores the actions that the robot took.
 
-        self.output_layer = nn.Linear(d_model, num_actions)
+    Parameters:
+        num_encoder_layers (int): Number of encoder layers in the transformer. We don't need many because the
+                                 dependencies are not relatively short
+        nhead (int): Number of heads in the multiheadattention models.
+        d_model (int): Dimension of the input image features to the transformer. Resnet-18 gives 512
+        dim_feedforward (int): Dimension of the feedforward network model.
+        dropout (float): Dropout value.
+        num_actions (int): Number of possible actions.
+        max_sequence_len (int): Determines how many images the transformer looks at at a time.
+        hidden_size_lstm (int): Size of the hidden layers in the lstm. 
+        num_layers_lstm (int): Number of layers in lstm. 1 is usually good enough, unless its a very complex pattern.
+    """
+    def __init__(self, num_encoder_layers=2, nhead=4, d_model=512, dim_feedforward=2048,
+                    dropout=0.1, num_actions=3, max_sequence_len=8, hidden_size_lstm=64,
+                    num_layers_lstm=2):
+        
+        super(HybridModel, self).__init__()
+        self.transformer = ImageTransformer(num_encoder_layers=num_encoder_layers, nhead=nhead, 
+                                            d_model=d_model, dim_feedforward=dim_feedforward, dropout=dropout, 
+                                            num_actions=num_actions, max_sequence_len=max_sequence_len)
+        self.lstm = ActionLSTM(num_actions=num_actions, hidden_size=hidden_size_lstm, 
+                               num_layers=num_layers_lstm)
+
+        self.output_layer = nn.Linear(d_model + hidden_size_lstm, num_actions)
     
     def forward(self, images, commands):
+        # Push data through models
         transformer_out = self.transformer(images, commands)
-        lstm_out = self.lstm(images, commands)
+        lstm_out = self.lstm(commands)
 
-        output = self.output_layer(transformer_out, lstm_out)
+        # Combine
+        combined_output = torch.cat((transformer_out, lstm_out), dim=1)
+        combined_output = combined_output.unsqueeze(0)
+
+        output = self.output_layer(combined_output)
         
         return output
 
