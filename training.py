@@ -69,7 +69,7 @@ def parse_args() -> Namespace:
         help="Threshold in radians for classifying rotation as left/right or forward.",
     )
     arg_parser.add_argument(
-        "--local_data", action="store_true", help="Data is stored locally."
+        "--local_data", type=str, default=None help="Path to local dataset."
     )
 
     # Training configuration
@@ -129,8 +129,7 @@ def y_from_filename(rotation_threshold: float, filename: str) -> str:
 
     Example: "path/to/file/001_000011_-1p50.png" --> "right"
     """
-    filename_stem = Path(filename).stem
-    angle = float(filename_stem.split("_")[2].replace("p", "."))
+    angle = get_angle_from_filename(filename)
 
     if angle > rotation_threshold:
         return "left"
@@ -140,7 +139,25 @@ def y_from_filename(rotation_threshold: float, filename: str) -> str:
         return "forward"
 
 
+
 def get_dls(args: Namespace, data_path: str):
+    """
+    Generates DataLoaders for training based on the desired ML model.
+
+    Parameters:
+        args (Namespace): A Namespace object containing various training configuration options.
+            Relevant options include:
+            - use_command_image: Flag indicating if using single image prediction model.
+            - use_command_image_transformer: Flag indicating if multi image transformer should be used.
+            - valid_pct: The percentage of data to use for validation.
+            - batch_size: The size of batches to use when training.
+            - image_resize: The target size to resize images to.
+            - rotation_threshold: The angle threshold used to determine labels from filenames.
+        data_path (str): Path to the dataset directory containing the images.
+
+    Returns:
+        DataLoaders: The constructed fastai DataLoaders object ready for training.
+    """
     # NOTE: not allowed to add a type annotation to the input
 
     image_filenames: list = get_image_files(data_path)  # type:ignore
@@ -150,6 +167,10 @@ def get_dls(args: Namespace, data_path: str):
 
     if args.use_command_image:
         return get_image_command_category_dataloaders(
+            args, data_path, image_filenames, label_func
+        )
+    elif args.use_command_image_transformer:
+        return get_image_command_category_dataloaders( # TODO: check if this is compatible
             args, data_path, image_filenames, label_func
         )
     else:
@@ -201,6 +222,44 @@ def get_image_command_category_dataloaders(
         data_path, shuffle=True, batch_size=args.batch_size
     )
 
+def get_image_command_transformer_dataloaders(
+args: Namespace, data_path: str, image_filenames, y_from_filename
+):
+    def x1_from_filename(filename: str) -> str:
+        return filename
+
+    def x2_from_filename(filename) -> int:
+        filename_index = image_filenames.index(Path(filename))
+
+        if filename_index == 0:
+            return 0
+
+        previous_filename = image_filenames[filename_index - 1]
+        previous_angle = get_angle_from_filename(previous_filename)
+
+        if previous_angle > args.rotation_threshold:
+            return 1
+        elif previous_angle < -args.rotation_threshold:
+            return 2
+        else:
+            return 0
+
+    image_command_data = DataBlock(
+        blocks=(ImageBlock, RegressionBlock, CategoryBlock),  # type: ignore
+        n_inp=2,
+        get_items=get_image_files,
+        get_y=y_from_filename,
+        get_x=[x1_from_filename, x2_from_filename],
+        shuffle=False, # Time series reliant, so we shouldn't shuffle
+        item_tfms=None,
+        batch_tfms=aug_transforms(), # data augmentation
+    )
+
+    return image_command_data.dataloaders(
+        data_path, shuffle=True, batch_size=args.batch_size
+    )
+
+
 def run_experiment(args: Namespace, run, dls):
     # Automatically select cuda, mac, or cpu
     device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
@@ -229,6 +288,24 @@ def train_model(dls: DataLoaders, args: Namespace, run, rep: int):
 
     if args.use_command_image:
         net = ImageCommandModel(args.model_arch, pretrained=args.pretrained)
+        learn = Learner(
+            dls,
+            net,
+            loss_func=CrossEntropyLossFlat(),
+            metrics=accuracy,
+            cbs=WandbCallback(log_model=True),
+        )
+    elif args.use_command_image_transformer: # TODO: make sure this is right
+        net = ImageActionTransformer() 
+        learn = Learner( 
+            dls,
+            net,
+            loss_func=CrossEntropyLossFlat(),
+            metrics=accuracy,
+            cbs=WandbCallback(log_model=True),
+        )
+    elif args.use_hybrid_model: # TODO: make sure this is right
+        net = HybridModel()
         learn = Learner(
             dls,
             net,
@@ -311,7 +388,7 @@ class CNNFeatureExtractor(nn.Module):
         # Use ResNet18 for image feature extraction, remove the final layer to get feature vector
         self.feature_extractor = resnet18(pretrained=True)
         self.feature_extractor = nn.Sequential(*list(self.feature_extractor.children())[:-1])
-        self.adapt_features = nn.Linear(512 * 7 * 7, d_model)
+        self.adapt_features = nn.Linear(d_model * 7 * 7, d_model)
     
     def forward(self, imgs):
         # Extract features
