@@ -52,6 +52,17 @@ def parse_args() -> Namespace:
         action="store_true",
         help="Use the command+image input model.",
     )
+    arg_parser.add_argument(
+        "--use_command_image_transformer",
+        action="store_true",
+        help="Use the command+image transformer model.",
+    )
+    arg_parser.add_argument(
+        "--use_hybrid_model",
+        action="store_true",
+        help="Use the hybrid transformer and LSTM model.",
+    )
+
 
     # Dataset configuration
     arg_parser.add_argument("dataset_name", help="Name of dataset to use.")
@@ -69,7 +80,7 @@ def parse_args() -> Namespace:
         help="Threshold in radians for classifying rotation as left/right or forward.",
     )
     arg_parser.add_argument(
-        "--local_data", type=str, default=None help="Path to local dataset."
+        "--local_data", type=str, default=None, help="Path to local dataset."
     )
 
     # Training configuration
@@ -388,15 +399,14 @@ class CNNFeatureExtractor(nn.Module):
         # Use ResNet18 for image feature extraction, remove the final layer to get feature vector
         self.feature_extractor = resnet18(pretrained=True)
         self.feature_extractor = nn.Sequential(*list(self.feature_extractor.children())[:-1])
-        self.adapt_features = nn.Linear(d_model * 7 * 7, d_model)
+
     
     def forward(self, imgs):
         # Extract features
         features = self.feature_extractor(imgs)
         features = torch.flatten(features, start_dim=1)
         
-        # Adapt features to match the model inputs
-        return self.adapt_features(features)
+        return features
 
 
 class ImageActionTransformer(nn.Module):
@@ -415,6 +425,7 @@ class ImageActionTransformer(nn.Module):
         super(ImageActionTransformer, self).__init__()
         self.actions = num_actions # The number of possible actions the model can take
         self.cnn = CNNFeatureExtractor(d_model=d_model)
+        self.cmd_projection = nn.Linear(num_actions, d_model)
 
         # Transformer Layers
         encoder_layers = TransformerEncoderLayer(d_model=d_model, nhead=nhead, dim_feedforward=dim_feedforward, dropout=dropout)
@@ -440,11 +451,13 @@ class ImageActionTransformer(nn.Module):
 
         # Convert the actions to one hot torch vectors  Ex. [2,0] -> [[0,0,1,0],[1,0,0,0]]
         # Each vector represents the action taken in one hot form. This helps us weight actions evenly and better differentiate between each action.
-        cmd_embedding = functional.one_hot(cmd.to(torch.int64), self.actions)
-
+        cmd_one_hot = functional.one_hot(cmd.to(torch.int64), self.actions)
+        cmd_embedding = self.cmd_projection(cmd_one_hot.float())
+        
         # Combine image features and command embeddings
-        combined_features = torch.cat((img_features, cmd_embedding), dim=1)
+        combined_features = img_features + cmd_embedding
         combined_features = combined_features.unsqueeze(0)
+
 
         # Pass through transformer
         transformer_output = self.transformer_encoder(combined_features)
