@@ -100,6 +100,20 @@ def parse_args() -> Namespace:
         "--batch_size", type=int, default=64, help="Training batch size."
     )
 
+    # Transformer parameters
+    arg_parser.add_argument("--num_encoder_layers", type=int, default=6, help="Number of encoder layers.")
+    arg_parser.add_argument("--nhead", type=int, default=8, help="Number of heads in the multiheadattention models.")
+    arg_parser.add_argument("--d_model", type=int, default=512, help="Dimension of the input image features.")
+    arg_parser.add_argument("--dim_feedforward", type=int, default=2048, help="Dimension of the feedforward network model.")
+    arg_parser.add_argument("--dropout", type=float, default=0.1, help="Dropout value.")
+    arg_parser.add_argument("--num_actions", type=int, default=3, help="Number of possible actions.")
+
+    # Hybrid / LSTM
+    arg_parser.add_argument("--max_sequence_len", type=int, default=8, help="Maximum sequence length.")
+    arg_parser.add_argument("--hidden_size_lstm", type=int, default=64, help="Hidden size for LSTM.")
+    arg_parser.add_argument("--num_layers_lstm", type=int, default=2, help="Number of LSTM layers.")
+
+
     return arg_parser.parse_args()
 
 
@@ -306,8 +320,14 @@ def train_model(dls: DataLoaders, args: Namespace, run, rep: int):
             metrics=accuracy,
             cbs=WandbCallback(log_model=True),
         )
-    elif args.use_command_image_transformer: # TODO: make sure this is right
-        net = ImageActionTransformer() 
+    elif args.use_command_image_transformer:
+        net = ImageActionTransformer(num_encoder_layers=args.num_encoder_layers,
+                                    nhead=args.nhead,
+                                    d_model=args.d_model,
+                                    dim_feedforward=args.dim_feedforward,
+                                    dropout=args.dropout,
+                                    num_actions=args.num_actions
+        ) 
         learn = Learner( 
             dls,
             net,
@@ -393,7 +413,7 @@ class CNNFeatureExtractor(nn.Module):
 
     Converts PIL images or numpy arrays into tensors
     """
-    def __init__(self, d_model=512):
+    def __init__(self):
         super(CNNFeatureExtractor, self).__init__()
         
         # Use ResNet18 for image feature extraction, remove the final layer to get feature vector
@@ -421,7 +441,7 @@ class ImageActionTransformer(nn.Module):
         dropout (float): Dropout value.
         num_actions (int): Number of possible actions.
     """
-    def __init__(self, num_encoder_layers=6, nhead=8, d_model=512, dim_feedforward=2048, dropout=0.1, num_actions=3): # TODO: Change params
+    def __init__(self, num_encoder_layers=6, nhead=8, d_model=512, dim_feedforward=2048, dropout=0.1, num_actions=3):
         super(ImageActionTransformer, self).__init__()
         self.actions = num_actions # The number of possible actions the model can take
         self.cnn = CNNFeatureExtractor(d_model=d_model)
@@ -473,7 +493,7 @@ class ActionLSTM(nn.Module):
 
     A LSTM is good at 'forgetting' information that is no longer relevant. ex. traveling in a straight line down a hallway
     """
-    def __init__(self, num_actions=3, hidden_size=64, num_layers=2):
+    def __init__(self, num_actions, hidden_size, num_layers):
         super(ActionLSTM, self).__init__()
         self.actions = num_actions
 
@@ -495,8 +515,8 @@ class ImageTransformer(nn.Module):
     We also implement a maximum sequence length to restrict the amount of images processed.
 
     """
-    def __init__(self, num_encoder_layers=2, nhead=4, d_model=512, dim_feedforward=2048,
-                  dropout=0.1, num_actions=3, max_sequence_len=16):
+    def __init__(self, num_encoder_layers, nhead, d_model, dim_feedforward,
+                  dropout, num_actions, max_sequence_len):
         super(ImageTransformer, self).__init__()
         self.actions = num_actions
         self.max_sequence_len = max_sequence_len
