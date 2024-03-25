@@ -6,6 +6,7 @@ from argparse import ArgumentParser, Namespace
 from functools import partial
 from math import radians
 from pathlib import Path
+import utils
 
 # TODO: log plots as artifacts?
 # import matplotlib.pyplot as plt
@@ -23,17 +24,12 @@ from fastai.vision.augment import Resize
 from fastai.vision.data import ImageBlock, ImageDataLoaders
 from fastai.vision.learner import Learner, accuracy, vision_learner
 from fastai.vision.models import resnet18, resnet34
-from fastai.vision.utils import get_image_files
 from torch import nn
 from torch.nn import TransformerEncoder, TransformerEncoderLayer
 from torchvision.models import resnet18
-from torchvision.transforms import Normalize, ToTensor, Compose
 from fastai.vision.augment import aug_transforms
 from PIL import Image
-from torch.utils.data import Dataset, DataLoader
-import torch.nn.functional as functional
 import numpy as np
-
 import wandb
 
 # NOTE: we can change/add to this list
@@ -145,93 +141,28 @@ def setup_wandb(args: Namespace):
 
     return run, data_dir
 
-
-def get_angle_from_filename(filename: str) -> float:
-    filename_stem = Path(filename).stem
-    angle = float(filename_stem.split("_")[2].replace("p", "."))
-    return angle
-
-def x1_from_filename(filename: str) -> str:
-        return filename
-
-def x2_from_filename(filename, image_filesnames) -> int:
-        filename_index = image_filenames.index(Path(filename))
-
-        if filename_index == 0:
-            return 0
-
-        previous_filename = image_filenames[filename_index - 1]
-        previous_angle = get_angle_from_filename(previous_filename)
-
-        if previous_angle > args.rotation_threshold:
-            return 1
-        elif previous_angle < -args.rotation_threshold:
-            return 2
-        else:
-            return 0
-
-def y_from_filename(rotation_threshold: float, filename: str) -> str:
-    """Extracts the direction label from the filename of an image.
-
-    Example: "path/to/file/001_000011_-1p50.png" --> "right"
-    """
-    angle = get_angle_from_filename(filename)
-
-    if angle > rotation_threshold:
-        return "left"
-    elif angle < -rotation_threshold:
-        return "right"
-    else:
-        return "forward"
-
-def get_sequences(image_filenames, sequence_length):
-        sequences = []
-        commands = []
-        for i in range(0, len(image_filenames) - sequence_length + 1, sequence_length):
-            seq = image_filenames[i:i+sequence_length]
-        # Extract commands for the sequence
-        cmd_seq = [x2_from_filename(filename) for filename in seq]
-        sequences.append(seq)
-        commands.append(cmd_seq)
-        return sequences, commands
-
-
 def get_dls(args: Namespace, data_path: str):
     """
-    Generates DataLoaders for training based on the desired ML model.
-
-    Parameters:
-        args (Namespace): A Namespace object containing various training configuration options.
-            Relevant options include:
-            - use_command_image: Flag indicating if using single image prediction model.
-            - use_command_image_transformer: Flag indicating if multi image transformer should be used.
-            - valid_pct: The percentage of data to use for validation.
-            - batch_size: The size of batches to use when training.
-            - image_resize: The target size to resize images to.
-            - rotation_threshold: The angle threshold used to determine labels from filenames.
-        data_path (str): Path to the dataset directory containing the images.
-
-    Returns:
-        DataLoaders: The constructed fastai DataLoaders object ready for training.
+    Generates fastai DataLoaders for training based on the desired ML model.
     """
     # NOTE: not allowed to add a type annotation to the input
 
     image_filenames: list = get_image_files(data_path)  # type:ignore
 
     # Using a partial function to set the rotation_threshold from args
-    label_func = partial(y_from_filename, args.rotation_threshold)
+    label_func = partial(utils.y_from_filename, args.rotation_threshold)
 
     if args.use_command_image:
         return get_image_command_category_dataloaders(
             args, data_path, image_filenames, label_func
         )
     elif args.use_command_image_transformer:
-        return get_image_command_category_dataloaders(
-            args, data_path, image_filenames, label_func
+        return get_image_command_transformer_dataloaders(
+            args, data_path
         )
     elif args.use_hybrid_model:
         return get_hybrid_dataloaders(
-            args, data_path, image_filenames, label_func
+            args, data_path
         )
     else:
         return ImageDataLoaders.from_name_func(
@@ -249,13 +180,29 @@ def get_image_command_category_dataloaders(
     args: Namespace, data_path: str, image_filenames, y_from_filename
 ):  
     # NOTE: not allowed to add a type annotation to the input
+    def x2_from_filename(filename) -> float:
+        filename_index = image_filenames.index(Path(filename))
+
+        if filename_index == 0:
+            return 0.0
+
+        previous_filename = image_filenames[filename_index - 1]
+        previous_angle = utils.get_angle_from_filename(previous_filename)
+
+        if previous_angle > args.rotation_threshold:
+            return 1.0
+        elif previous_angle < -args.rotation_threshold:
+            return 2.0
+        else:
+            return 0.0
+
 
     image_command_data = DataBlock(
         blocks=(ImageBlock, RegressionBlock, CategoryBlock),  # type: ignore
         n_inp=2,
-        get_items=get_image_files,
+        get_items=utils.get_image_files,
         get_y=y_from_filename,
-        get_x=[x1_from_filename, x2_from_filename],
+        get_x=[utils.x1_from_filename, x2_from_filename],
         splitter=RandomSplitter(args.valid_pct),
         # item_tfms=Resize(args.image_resize),
     )
@@ -265,47 +212,57 @@ def get_image_command_category_dataloaders(
     )
 
 def get_image_command_transformer_dataloaders(
-args: Namespace, data_path: str, image_filenames, y_from_filename
+args: Namespace, data_path: str 
 ):
-
     image_command_data = DataBlock(
-        blocks=(ImageBlock, RegressionBlock, CategoryBlock),  # type: ignore
+        blocks=(ImageBlock, CategoryBlock),
         n_inp=2,
-        get_items=get_image_files,
-        get_y=y_from_filename,
-        get_x=[x1_from_filename, x2_from_filename],
+        get_items=utils.get_image_files,
+        get_y=utils.y_from_filename,
+        get_x=[utils.x1_from_filename, utils.x2_from_filename],
         shuffle=False, # Time series reliant, so we shouldn't shuffle
         item_tfms=None,
         batch_tfms=aug_transforms(), # data augmentation
     )
-
     return image_command_data.dataloaders(
         data_path, shuffle=False, batch_size=args.batch_size
     )
 
 
 def get_hybrid_dataloaders(
-args: Namespace, data_path: str, image_filenames, y_from_filename
-):
-    sequences, commands = get_sequences(image_filenames, args.max_sequence_len)
+args: Namespace, data_path: str
+):  
+    sequences = utils.get_sequences(args, data_path)
     
+    def get_items(_):
+        return sequences
     
-    def x1_from_sequence(sequence):
-        image_sequence = sequence
-        return image_sequence
-    def x2_from_sequence(sequence):
-        command_sequence = sequence
-        return command_sequence
-    def y_from_sequence(sequence):
-        targets = sequence
-        return targets
+    def get_x1(sequence):
+        images, _ = sequence
+        pil_images = [Image.open(path) for path in images]
+        return pil_images
     
+    def get_x2(sequence):
+        _ , commands = sequence
+        return commands
+    
+    def y_from_sequence(sequence): # Get label
+        images, _ = sequence
+        angle = utils.get_angle_from_filename(images[-1])
+
+        if angle > args.rotation_threshold:
+            return 1
+        elif angle < -args.rotation_threshold:
+            return 2
+        else:
+            return 0
+
     image_command_data = DataBlock(
-        blocks=(ImageBlock, RegressionBlock, CategoryBlock),  # type: ignore
+        blocks=(ImageBlock, CategoryBlock),
         n_inp=2,
-        get_items=get_sequences(image_filenames, args.max_sequence_len),
-        get_y=y_from_filename,
-        get_x=[x1_from_filename, x2_from_filename],
+        get_items=get_items,
+        get_y=y_from_sequence,
+        get_x=[get_x1, get_x2],
         shuffle=False, # Time series reliant, so we shouldn't shuffle
         item_tfms=None,
         batch_tfms=aug_transforms(), # data augmentation
@@ -315,25 +272,6 @@ args: Namespace, data_path: str, image_filenames, y_from_filename
         data_path, shuffle=False, batch_size=args.batch_size
     )
 
-class TransformerDataset(Dataset):
-    def __init__(self, image_paths, sequences, commands, transform=None):
-        self.image_paths = image_paths
-        self.sequences = sequences
-        self.commands = commands
-        self.transform = transform
-    def __len__(self):
-        return len(self.sequences)
-
-    def __getitem__(self, idx):
-        seq = self.sequences[idx]
-        cmd_seq = self.commands[idx]
-        images = [Image.open(Path(image_path)) for image_path in seq]
-        if self.transform:
-            images = [self.transform(image) for image in images]
-        images_tensor = torch.stack(images)
-        cmd_seq_tensor = torch.tensor(cmd_seq, dtype=torch.long)
-        return images_tensor, cmd_seq_tensor
-    
 
 def run_experiment(args: Namespace, run, dls):
     # Automatically select cuda, mac, or cpu
@@ -378,14 +316,11 @@ def train_model(dls: DataLoaders, args: Namespace, run, rep: int):
                                     dropout=args.dropout,
                                     num_actions=args.num_actions
         ) 
-        learn = Learner( 
-            dls,
-            net,
-            loss_func=CrossEntropyLossFlat(),
-            metrics=accuracy,
-            cbs=WandbCallback(log_model=True),
+        learn = Learner(dls, net, loss_func=CrossEntropyLossFlat(),
+                        metrics=accuracy,
+                        cbs=WandbCallback(log_model=True),
         )
-    elif args.use_hybrid_model: # TODO: make sure this is right
+    elif args.use_hybrid_model:
         net = HybridModel(num_encoder_layers=args.num_encoder_layers,
                         nhead=args.nhead,
                         d_model=args.d_model,
@@ -396,12 +331,8 @@ def train_model(dls: DataLoaders, args: Namespace, run, rep: int):
                         hidden_size_lstm=args.hidden_size_lstm,
                         num_layers_lstm=args.num_layers_lstm
         )
-        learn = Learner(
-            dls,
-            net,
-            loss_func=CrossEntropyLossFlat(),
-            metrics=accuracy,
-            cbs=WandbCallback(log_model=True),
+        learn = Learner(dls, net, loss_func=CrossEntropyLossFlat(),
+                        metrics=accuracy, cbs=WandbCallback(log_model=True),
         )
     else:
         learn = vision_learner(
@@ -519,8 +450,7 @@ class ImageActionTransformer(nn.Module):
         
         Parameters:
             img (PIL image or numpy array): A batch of images.
-            cmd (Tensor or int list): A batch of actions represented as integer indices. Ex. [0,4,1,4,3,2] where each integer represents a discrete action.
-        
+            cmd (Tensor): A batch of one hot encoded vectors representing discrete actions.
         Returns:
             Tensor: The model's prediction for each image-action pair.
                 
@@ -528,15 +458,10 @@ class ImageActionTransformer(nn.Module):
         # Apply transformations and feature extraction to images
         img_features = self.cnn(img)
 
-        # Convert the actions to one hot torch vectors  Ex. [2,0] -> [[0,0,1,0],[1,0,0,0]]
-        # Each vector represents the action taken in one hot form. This helps us weight actions evenly and better differentiate between each action.
-        cmd_one_hot = functional.one_hot(cmd.to(torch.int64), self.actions)
-        cmd_embedding = self.cmd_projection(cmd_one_hot.float())
-        
-        # Combine image features and command embeddings
+        # Combine image features and commands
+        cmd_embedding = self.cmd_projection(cmd.float())
         combined_features = img_features + cmd_embedding
         combined_features = combined_features.unsqueeze(0)
-
 
         # Pass through transformer
         transformer_output = self.transformer_encoder(combined_features)
@@ -553,6 +478,9 @@ class HybridModel(nn.Module):
     with the same inner workings as the larger one, but it has a maximum sequence cutoff that limits
     how far back it looks for images. The long term dependencies necessary for exploration are captured 
     by an lstm that only stores the actions that the robot took.
+
+    Large sequence sizes with small max sequence sizes will be the best combo, since the sequence contains the 
+    long term dependicies for the lstm
 
     Parameters:
         num_encoder_layers (int): Number of encoder layers in the transformer. We don't need many because the
@@ -582,6 +510,13 @@ class HybridModel(nn.Module):
         self.output_layer = nn.Linear(d_model, num_actions)
     
     def forward(self, images, commands):
+        """
+        Performs a forward pass through the model.
+        
+        Parameters:
+            images (PIL image or numpy array): A sequence of images.
+            commands (Tensor): A sequence of actions represented as one hot encoded tensors.      
+        """
         # Push data through models
         transformer_out = self.transformer(images, commands)
         lstm_out = self.lstm(commands)
@@ -602,7 +537,6 @@ class ImageTransformer(nn.Module):
     Lower number of encoder layers, since we don't need as many long term dependencies.
 
     We also implement a maximum sequence length to restrict the amount of images processed.
-
     """
     def __init__(self, num_encoder_layers, nhead, d_model, dim_feedforward,
                   dropout, num_actions, max_sequence_len):
@@ -625,45 +559,47 @@ class ImageTransformer(nn.Module):
         self.output_layer = nn.Linear(d_model, self.actions)
 
     def forward(self, img, cmd):
-        attention_mask=None
-        
-        # Adds a batch dimension
-        if cmd.dim() == 1:
-            cmd = cmd.unsqueeze(0)
-        
-        if img.shape[0] == self.max_sequence_len:
-            pass
-        # Restrict to sequence length. 
-        elif img.shape[0] > self.max_sequence_len:
-            img = img[-(self.max_sequence_len):]
-            cmd = cmd[:, -(self.max_sequence_len):]
-        else: 
-            # Pad to sequence length
-            pad_length = self.max_sequence_len - img.shape[0]
-            masked_images = torch.zeros(pad_length, img.shape[1], img.shape[2], img.shape[3])
-            img = torch.cat([img,masked_images], dim=0)
+        batched = False
+        if img.dim() == 5:
+            batched = True
+        while cmd.dim() < 3:
+            cmd.unsqueeze(0)
+        while img.dim() < 5:
+            img = img.unsqueeze(0)
 
-            # Create a mask to tell model to ignore padding
-            attention_mask = create_attention_mask(self.max_sequence_len, pad_length, img.shape())
-            attention_mask.to(img.device)
-
-            # pad commands
-            pad_length = self.max_sequence_len - cmd.shape[0]
-            masked_commands = torch.zeros(pad_length, cmd.shape[1])
-            cmd = torch.cat([cmd,masked_commands], dim=0)
+        batch_size = img.shape[0]
+        seq_length = img.shape[1]
+    
+        print(img.shape)
+        print(cmd.shape)
+        if seq_length > self.max_sequence_len:
+            # If sequence length exceeds the max, truncate it
+            img = img[:, -self.max_sequence_len:]
+            cmd = cmd[:, -self.max_sequence_len:]
+            pad_length = 0
+        else:
+            # Pad the sequence if it's shorter than the max length
+            pad_length = self.max_sequence_len - seq_length
+            padded_img_shape = (batch_size, pad_length, *img.shape[2:])
+            padded_cmd_shape = (batch_size, pad_length, cmd.shape[-1])
+            
+            img = torch.cat([torch.zeros(padded_img_shape, device=img.device), img], dim=1)
+            cmd = torch.cat([torch.zeros(padded_cmd_shape, device=cmd.device), cmd], dim=1)
         
-        img_features = self.cnn(img)
-
-        cmd_one_hot = functional.one_hot(cmd.to(torch.int64), self.actions)
-        cmd_embedding = self.cmd_projection(cmd_one_hot.float())
-        
+        # attention mask 
+        attention_mask = create_attention_mask(batch_size, self.max_sequence_len, pad_length, cmd)
+    
         # Combine image features and command embeddings
+        img_features = self.cnn(img)
+        cmd_embedding = self.cmd_projection(cmd.float())
         combined_features = img_features + cmd_embedding
 
         #add positional encoding
         combined_features += self.positional_encoding
 
         # Pass through transformer
+        if batched == False:
+            combined_features.squeeze(0)
         transformer_output = self.transformer_encoder(combined_features, src_key_padding_mask=attention_mask)
 
         return transformer_output
@@ -676,14 +612,11 @@ class ActionLSTM(nn.Module):
     """
     def __init__(self, num_actions, hidden_size, num_layers):
         super(ActionLSTM, self).__init__()
-        self.actions = num_actions
-
         # LSTM Layers
         self.lstm = nn.LSTM(input_size=num_actions, hidden_size=hidden_size, num_layers=num_layers, batch_first=True)
     
     def forward(self, cmd):
-        cmd_embedding = functional.one_hot(cmd.to(torch.int64), self.actions).float()
-        _, (final_layer, _) = self.lstm(cmd_embedding)
+        _, (final_layer, _) = self.lstm(cmd)
         return final_layer[-1] # Return the hidden state from the last layer
 
 def create_positional_encoding(seq_length, d_model):
@@ -694,9 +627,15 @@ def create_positional_encoding(seq_length, d_model):
     pe[:, 1::2] = np.cos(position * div_term)
     return torch.tensor(pe, dtype=torch.float).unsqueeze(0)  # Add batch dimension
 
-def create_attention_mask(seq_length, mask_length, shape):
-    
-    
+def create_attention_mask(batch_size, seq_length, pad_length, img):
+    """
+    1. Create a bool tensor the size of seq_length
+    2. Set bools to True for the first pad length images
+    3. return mask
+    """
+    mask = torch.zeros(batch_size, seq_length, dtype=torch.bool, device=img.device)
+    if pad_length > 0:
+        mask[:, :pad_length] = True
     return mask
 
 def main():
