@@ -1,9 +1,6 @@
-
-import torch as T
-import fastai
+import torch
 import utils
 from torch.utils.data import Dataset
-from torchvision.transforms import Compose, ToTensor, Normalize
 from torchvision.transforms.functional import to_tensor
 from fastai.vision.all import *
 from PIL import Image
@@ -13,6 +10,8 @@ class HybridDataset(Dataset):
         self.data = sequences
         self.num_actions = args.num_actions
         self.label_func = label_func
+        self.items = list(range(len(self.data[1])))
+
 
     def __len__(self):
         return len(self.data[1])
@@ -30,15 +29,14 @@ class HybridDataset(Dataset):
         command_tensor = torch.stack(commands) # seq_length x actions
         
         # Extract label
-        label = self.label_func(self.data[0][idx])
+        label = torch.tensor(self.label_func(images), dtype=torch.long)
         
         return (image_tensor, command_tensor), label
 
 class HybridDataLoader(DataLoader):
     def __init__(self, *args, **kwargs):
-        # Ensure 'collate_fn' is set to your custom collate function
         kwargs['collate_fn'] = self.custom_collate_fn
-        super().__init__(*args, **kwargs)
+        super(HybridDataLoader, self).__init__(*args, **kwargs)
     
     @staticmethod
     def custom_collate_fn(batch):
@@ -60,9 +58,9 @@ class HybridDataLoader(DataLoader):
         
         # Stack labels if they are tensors, or leave as a list if they're not tensorial
         if isinstance(labels[0], torch.Tensor):
-            labels_stacked = torch.stack(labels, dim=0)
+            labels_stacked = torch.stack(labels, dim=0).float()
         else:
-            labels_stacked = labels
+            labels_stacked = torch.stack((ToTensor.labels)).float()
         
         print(f"Images stacked shape: {images_stacked.shape}")
         print(f"Commands stacked shape: {commands_stacked.shape}")
