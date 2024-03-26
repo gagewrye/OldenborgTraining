@@ -1,8 +1,7 @@
-import numpy as np
+import utils
 import torch
 import torch.nn.functional as F
-from fastai.vision.models import resnet18
-from fastai.vision.models import resnet34
+from fastai.vision.models import resnet18, resnet34
 from torch import nn
 from torch.nn import TransformerEncoder, TransformerEncoderLayer
 
@@ -144,9 +143,8 @@ class HybridModel(nn.Module):
             sequences (tensor): batch x sequences x channels + commands x H x W
         """
         
-        images = batch[0] # [64, 8, 4, 244, 244]
-        commands = batch[1]  # [64, 1024, 3]
-       
+        images = batch[0] # [B x max_seq x C x H x W]
+        commands = batch[1]  # [B x seq x actions]
 
         while images.dim() < 5:
             images.unsqueeze(0)
@@ -154,28 +152,23 @@ class HybridModel(nn.Module):
             commands.unsqueeze(0)
         
         # Push data through models and apply activations
-        transformer_out = self.transformer(images, commands) # [8x64x512]
+        transformer_out = self.transformer(images, commands) # [B x 512]
         transformer_out = F.leaky_relu(transformer_out)
         
-        lstm_out = self.lstm(commands) # [64x64]
+        lstm_out = self.lstm(commands) # [B x hidden_size_lstm]
         lstm_out = F.leaky_relu(lstm_out)
         
-        lstm_projection = self.projection_layer(lstm_out) # [64x512]
+        lstm_projection = self.projection_layer(lstm_out) # [B x 512]
         lstm_projection = F.leaky_relu(lstm_projection)
         
         # Weighted combination
         merged_output = (transformer_out * self.weights_transformer.unsqueeze(0)) + (lstm_projection * self.weights_lstm.unsqueeze(0))
-        merged_output = F.relu(merged_output)
+        merged_output = F.relu(merged_output) # [B x 512]
         
         # Output Layer and softmax
-        output = self.output_layer(merged_output) # [8x64]
-        output = output.transpose(0,1)
-        probabilities = F.softmax(output, dim=-1)
+        output = self.output_layer(merged_output) # [B x 3]
         
-        # Predict actions
-        predictions = torch.argmax(probabilities, dim=-1)
-
-        return predictions
+        return output
 
 class ImageTransformer(nn.Module):
     """
@@ -195,14 +188,17 @@ class ImageTransformer(nn.Module):
         self.cmd_projection = nn.Linear(num_actions, d_model)
 
         # Allows transformer to understand sequence of images
-        positional_encoding = create_positional_encoding(max_sequence_len, d_model)
+        positional_encoding = utils.create_positional_encoding(max_sequence_len, d_model)
         self.register_buffer('positional_encoding', positional_encoding)
 
         # Transformer Layers
-        encoder_layers = TransformerEncoderLayer(d_model=d_model, nhead=nhead,
+        encoder_layers = TransformerEncoderLayer(d_model=d_model, nhead=nhead, batch_first=True,
                                                   dim_feedforward=dim_feedforward, dropout=dropout)
         self.transformer_encoder = TransformerEncoder(encoder_layer=encoder_layers, num_layers=num_encoder_layers)
 
+        # Pool each sequence
+        self.attention_pooling = AttentionPooling(512)
+        
         # Output Layer
         self.output_layer = nn.Linear(d_model, self.actions)
 
@@ -219,6 +215,7 @@ class ImageTransformer(nn.Module):
         batch_size = img.shape[0]
         seq_length = img.shape[1]
 
+        # resize images
         pad_length = 0
         if seq_length == self.max_sequence_len:
             pass
@@ -230,7 +227,8 @@ class ImageTransformer(nn.Module):
             pad_length = self.max_sequence_len - seq_length
             padded_img_shape = (batch_size, pad_length, *img.shape[2:])
             img = torch.cat([torch.zeros(padded_img_shape, device=img.device), img], dim=1)
-            
+        
+        # Resize commands
         cmd_seq_len = cmd.shape[-2]
         if cmd_seq_len > self.max_sequence_len:
             cmd = cmd[:, -self.max_sequence_len:]
@@ -240,7 +238,7 @@ class ImageTransformer(nn.Module):
             cmd = torch.cat([torch.zeros(padding, device=cmd.device), cmd], dim=1)
             
         # attention mask 
-        attention_mask = create_attention_mask(batch_size, self.max_sequence_len, pad_length, cmd)
+        attention_mask = utils.create_attention_mask(batch_size, self.max_sequence_len, pad_length, cmd)
     
         # Combine image features and command embeddings
         img_features = self.cnn(img)
@@ -249,8 +247,7 @@ class ImageTransformer(nn.Module):
 
         #add positional encoding
         combined_features += self.positional_encoding
-        combined_features = combined_features.transpose(0,1)
-
+        
         if batched == False: # unbatch for single items
             combined_features.squeeze(0)
             attention_mask.squeeze(0)
@@ -258,7 +255,10 @@ class ImageTransformer(nn.Module):
         # Pass through transformer
         transformer_output = self.transformer_encoder(combined_features, src_key_padding_mask=attention_mask)
         
-        return transformer_output
+        # [BxSeqx512] -> pool -> [Bx512] for one prediction per sequence
+        pooled_output = self.attention_pooling(transformer_output)
+
+        return pooled_output
 
 class ActionLSTM(nn.Module):
     """
@@ -322,22 +322,22 @@ class CNNFeatureExtractor(nn.Module):
         
         return features
 
+class AttentionPooling(nn.Module):
+    def __init__(self, feature_dim):
+        super(AttentionPooling, self).__init__()
+        # Initialize a query vector that will be used to compute attention scores for each timestep
+        self.query = nn.Parameter(torch.randn(feature_dim, 1))
+        
+    def forward(self, x):
+        batch_size, sequence_length, feature_dim = x.size()
 
-def create_positional_encoding(seq_length, d_model):
-    position = np.arange(seq_length)[:, np.newaxis]
-    div_term = np.exp(np.arange(0, d_model, 2) * -(np.log(10000.0) / d_model))
-    pe = np.zeros((seq_length, d_model))
-    pe[:, 0::2] = np.sin(position * div_term)
-    pe[:, 1::2] = np.cos(position * div_term)
-    return torch.tensor(pe, dtype=torch.float).unsqueeze(0)  # Add batch dimension
-
-def create_attention_mask(batch_size, seq_length, pad_length, img):
-    """
-    1. Create a bool tensor the size of seq_length
-    2. Set bools to True for the first pad length images
-    3. return mask
-    """
-    mask = torch.zeros(batch_size, seq_length, dtype=torch.bool, device=img.device)
-    if pad_length > 0:
-        mask[:, :pad_length] = True
-    return mask
+        # Compute attention scores 
+        attn_scores = torch.matmul(x.view(-1, feature_dim), self.query).view(batch_size, sequence_length)
+        
+        # Apply softmax to get attention weights 
+        attn_weights = F.softmax(attn_scores, dim=1)
+        
+        # Use attention weights to compute a weighted sum of features across timesteps
+        weighted_sum = torch.sum(x * attn_weights.unsqueeze(-1), dim=1)  # Shape: [batch_size, feature_dim]
+        
+        return weighted_sum
