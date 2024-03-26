@@ -1,10 +1,8 @@
+import numpy as np
+import torch
+import torch.nn.functional
 from argparse import Namespace
 from pathlib import Path
-import torch.nn.functional
-from fastai.vision.utils import get_image_files
-
-import torch
-
 
 def y_from_filename(angle_dict, rotation_threshold, filename) -> str:
     """
@@ -28,13 +26,13 @@ def x2_from_filename(args: Namespace, filename: str, image_filenames) -> torch.t
         previous_angle = get_angle_from_filename(previous_filename)
         
         if filename_index == 0:
-            previous_angle = 0
+            previous_angle = 0.0
         
-        label = 0
+        label = 0.0
         if previous_angle > args.rotation_threshold:
-            label = 1
+            label = 1.0
         elif previous_angle < -args.rotation_threshold:
-            label = 2
+            label = 2.0
         return label
 
 def get_angle_from_filename(filename: str) -> float:
@@ -43,23 +41,23 @@ def get_angle_from_filename(filename: str) -> float:
     return angle
 
 def x2_from_angle(rot_threshold: float, angle: float):
-    label = 0
+    label = 0.0
     if angle > rot_threshold:
-        label = 1
+        label = 1.0
     elif angle < -rot_threshold:
-        label = 2
+        label = 2.0
     return label
 
-def y_from_sequence(dict, rotation_threshold, images):
+def y_from_sequence(dict, rotation_threshold, images) -> float:
     target = images[-1]
     angle = dict[target]
 
     if angle > rotation_threshold:
-        return "left"
+        return 1.0
     elif angle < -rotation_threshold:
-        return "right"
+        return 2.0
     else:
-        return "forward"
+        return 0.0
         
 def get_sequences(args: Namespace, image_filenames, angle_map):
         
@@ -82,13 +80,6 @@ def get_sequences(args: Namespace, image_filenames, angle_map):
 def commands_to_tensor(commands, num_actions):
     """
     Convert a list of command integers to a one-hot encoded tensor.
-    
-    Parameters:
-    - commands (list of int): The command integers.
-    - num_actions (int): The total number of possible actions.
-    
-    Returns:
-    - torch.Tensor: The one-hot encoded commands tensor.
     """
     # Convert list of commands to a tensor of type long
     commands_tensor = torch.tensor(commands, dtype=torch.long)
@@ -97,3 +88,23 @@ def commands_to_tensor(commands, num_actions):
     one_hot_commands = torch.nn.functional.one_hot(commands_tensor, num_classes=num_actions)
     
     return one_hot_commands
+
+def create_positional_encoding(seq_length, d_model):
+    position = np.arange(seq_length)[:, np.newaxis]
+    div_term = np.exp(np.arange(0, d_model, 2) * -(np.log(10000.0) / d_model))
+    pe = np.zeros((seq_length, d_model))
+    pe[:, 0::2] = np.sin(position * div_term)
+    pe[:, 1::2] = np.cos(position * div_term)
+    return torch.tensor(pe, dtype=torch.float).unsqueeze(0)  # Add batch dimension
+
+
+def create_attention_mask(batch_size, seq_length, pad_length, img):
+    """
+    1. Create a bool tensor the size of seq_length
+    2. Set bools to True for the first pad length images
+    3. return mask
+    """
+    mask = torch.zeros(batch_size, seq_length, dtype=torch.bool, device=img.device)
+    if pad_length > 0:
+        mask[:, :pad_length] = True
+    return mask
