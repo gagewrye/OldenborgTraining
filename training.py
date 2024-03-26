@@ -178,13 +178,13 @@ def get_dls(args: Namespace, data_path: str):
         train_data = data.HybridDataset(args, train_seqs, label_func)
         valid_data = data.HybridDataset(args, valid_seqs, label_func)
 
-        fastai_dataloader = data.get_fastai_dataloaders(
+        dls = data.get_fastai_dataloaders(
             train_data, 
             valid_data,
             args.batch_size,
             num_workers=args.num_replicates
         )
-        return fastai_dataloader
+        return dls
     else:
         return ImageDataLoaders.from_name_func(
             data_path,
