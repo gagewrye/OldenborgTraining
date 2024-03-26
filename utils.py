@@ -1,18 +1,16 @@
 from argparse import Namespace
 from pathlib import Path
-import torch.functional as functional
+import torch.nn.functional
 from fastai.vision.utils import get_image_files
 
 import torch
 
 
-def y_from_filename(rotation_threshold, filename) -> str:
-    """Extracts the direction label from the filename of an image.
-
-    Example: "path/to/file/001_000011_-1p50.png" --> "right"
+def y_from_filename(angle_dict, rotation_threshold, filename) -> str:
     """
-    filename_stem = Path(filename).stem
-    angle = float(filename_stem.split("_")[2].replace("p", "."))
+    Extracts the direction label from the filename of an image using dictionary
+    """
+    angle = angle_dict[filename]
 
     if angle > rotation_threshold:
         return "left"
@@ -21,16 +19,10 @@ def y_from_filename(rotation_threshold, filename) -> str:
     else:
         return "forward"
 
-def get_angle_from_filename(filename: str) -> float:
-    filename_stem = Path(filename).stem
-    angle = float(filename_stem.split("_")[2].replace("p", "."))
-    return angle
-
 def x1_from_filename(filename: str) -> str:
         return filename
 
-def x2_from_filename(args: Namespace, filename: str, data_path: str) -> torch.tensor: 
-        image_filenames = get_image_files(data_path)
+def x2_from_filename(args: Namespace, filename: str, image_filenames) -> torch.tensor: 
         filename_index = image_filenames.index(Path(filename))
         previous_filename = image_filenames[filename_index - 1]
         previous_angle = get_angle_from_filename(previous_filename)
@@ -43,24 +35,24 @@ def x2_from_filename(args: Namespace, filename: str, data_path: str) -> torch.te
             label = 1
         elif previous_angle < -args.rotation_threshold:
             label = 2
-        return functional.one_hot(torch.tensor(label), args.num_actions)
+        return label
 
-def get_sequences(args: Namespace, data_path: str):
-        image_filenames = get_image_files(data_path)
-        commands = [x2_from_filename(args, f, data_path) for f in image_filenames]
-        
-        # Group into sequences
-        length = args.max_sequence_len
-        sequences = [(image_filenames[i:i+length], commands[i:i+length]) 
-                    for i in range(len(image_filenames) - length + 1)]
-        return sequences
+def get_angle_from_filename(filename: str) -> float:
+    filename_stem = Path(filename).stem
+    angle = float(filename_stem.split("_")[2].replace("p", "."))
+    return angle
 
-def y_from_filename(rotation_threshold: float, filename: str) -> str:
-    """Extracts the direction label from the filename of an image.
+def x2_from_angle(rot_threshold: float, angle: float):
+    label = 0
+    if angle > rot_threshold:
+        label = 1
+    elif angle < -rot_threshold:
+        label = 2
+    return label
 
-    Example: "path/to/file/001_000011_-1p50.png" --> "right"
-    """
-    angle = get_angle_from_filename(filename)
+def y_from_sequence(dict, rotation_threshold, images):
+    target = images[-1]
+    angle = dict[target]
 
     if angle > rotation_threshold:
         return "left"
@@ -68,3 +60,40 @@ def y_from_filename(rotation_threshold: float, filename: str) -> str:
         return "right"
     else:
         return "forward"
+        
+def get_sequences(args: Namespace, image_filenames, angle_map):
+        
+        commands = [x2_from_angle(args.rotation_threshold, angle_map[i-1] if i>0 else 0)
+                     for i in range(len(image_filenames))]
+        
+        # Group into sequences
+        length = args.sequence_len
+        max_seq = args.max_sequence_len
+
+        images = []
+        commands_list = []
+
+        for i in range(len(image_filenames) - length + 1):
+             images.append(image_filenames[max(0,i+length-max_seq):i+length])
+             commands_list.append(commands[i:i+length])
+       
+        return [images,commands_list]
+
+def commands_to_tensor(commands, num_actions):
+    """
+    Convert a list of command integers to a one-hot encoded tensor.
+    
+    Parameters:
+    - commands (list of int): The command integers.
+    - num_actions (int): The total number of possible actions.
+    
+    Returns:
+    - torch.Tensor: The one-hot encoded commands tensor.
+    """
+    # Convert list of commands to a tensor of type long
+    commands_tensor = torch.tensor(commands, dtype=torch.long)
+    
+    # One-hot encode the commands
+    one_hot_commands = torch.nn.functional.one_hot(commands_tensor, num_classes=num_actions)
+    
+    return one_hot_commands
