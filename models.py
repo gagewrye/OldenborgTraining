@@ -1,10 +1,11 @@
+import numpy as np
+import torch
+import torch.nn.functional as F
 from fastai.vision.models import resnet18
 from fastai.vision.models import resnet34
-import torch
 from torch import nn
 from torch.nn import TransformerEncoder, TransformerEncoderLayer
-import torch.nn.functional as functional
-import numpy as np
+
 
 # NOTE: we can change/add to this list
 compared_models = {"resnet18": resnet18, "resnet34": resnet34}
@@ -84,7 +85,8 @@ class ImageActionTransformer(nn.Module):
         img_features = self.cnn(img)
 
         # Combine image features and commands
-        cmd_embedding = self.cmd_projection(cmd.float())
+        cmd_one_hot = torch.nn.functional.one_hot(torch.tensor(cmd).to(torch.int64), self.actions)
+        cmd_embedding = self.cmd_projection(cmd_one_hot.float())
         combined_features = img_features + cmd_embedding
         combined_features = combined_features.unsqueeze(0)
 
@@ -134,25 +136,46 @@ class HybridModel(nn.Module):
         self.weights_lstm = torch.nn.Parameter(torch.randn(d_model))
         self.output_layer = nn.Linear(d_model, num_actions)
     
-    def forward(self, images, commands):
+    def forward(self, batch):
         """
         Performs a forward pass through the model.
         
         Parameters:
-            images (PIL image or numpy array): A sequence of images.
-            commands (Tensor): A sequence of actions represented as one hot encoded tensors.      
+            sequences (tensor): batch x sequences x channels + commands x H x W
         """
-        # Push data through models
-        transformer_out = self.transformer(images, commands)
-        lstm_out = self.lstm(commands)
-        lstm_projection = self.projection_layer(lstm_out)
+        
+        images = batch[0] # [64, 8, 4, 244, 244]
+        commands = batch[1]  # [64, 1024, 3]
+       
 
+        while images.dim() < 5:
+            images.unsqueeze(0)
+        while commands.dim() < 3:
+            commands.unsqueeze(0)
+        
+        # Push data through models and apply activations
+        transformer_out = self.transformer(images, commands) # [8x64x512]
+        transformer_out = F.leaky_relu(transformer_out)
+        
+        lstm_out = self.lstm(commands) # [64x64]
+        lstm_out = F.leaky_relu(lstm_out)
+        
+        lstm_projection = self.projection_layer(lstm_out) # [64x512]
+        lstm_projection = F.leaky_relu(lstm_projection)
+        
         # Weighted combination
         merged_output = (transformer_out * self.weights_transformer.unsqueeze(0)) + (lstm_projection * self.weights_lstm.unsqueeze(0))
-
-        output = self.output_layer(merged_output)
+        merged_output = F.relu(merged_output)
         
-        return output
+        # Output Layer and softmax
+        output = self.output_layer(merged_output) # [8x64]
+        output = output.transpose(0,1)
+        probabilities = F.softmax(output, dim=-1)
+        
+        # Predict actions
+        predictions = torch.argmax(probabilities, dim=-1)
+
+        return predictions
 
 class ImageTransformer(nn.Module):
     """
@@ -184,6 +207,7 @@ class ImageTransformer(nn.Module):
         self.output_layer = nn.Linear(d_model, self.actions)
 
     def forward(self, img, cmd):
+
         batched = False
         if img.dim() == 5:
             batched = True
@@ -194,23 +218,27 @@ class ImageTransformer(nn.Module):
 
         batch_size = img.shape[0]
         seq_length = img.shape[1]
-    
-        print(img.shape)
-        print(cmd.shape)
-        if seq_length > self.max_sequence_len:
+
+        pad_length = 0
+        if seq_length == self.max_sequence_len:
+            pass
+        elif seq_length > self.max_sequence_len:
             # If sequence length exceeds the max, truncate it
             img = img[:, -self.max_sequence_len:]
-            cmd = cmd[:, -self.max_sequence_len:]
-            pad_length = 0
         else:
             # Pad the sequence if it's shorter than the max length
             pad_length = self.max_sequence_len - seq_length
             padded_img_shape = (batch_size, pad_length, *img.shape[2:])
-            padded_cmd_shape = (batch_size, pad_length, cmd.shape[-1])
-            
             img = torch.cat([torch.zeros(padded_img_shape, device=img.device), img], dim=1)
-            cmd = torch.cat([torch.zeros(padded_cmd_shape, device=cmd.device), cmd], dim=1)
-        
+            
+        cmd_seq_len = cmd.shape[-2]
+        if cmd_seq_len > self.max_sequence_len:
+            cmd = cmd[:, -self.max_sequence_len:]
+        elif cmd_seq_len < self.max_sequence_len:
+            pad = self.max_sequence_len - self.max_seq_length
+            padding = (batch_size, pad, cmd.shape[-1])
+            cmd = torch.cat([torch.zeros(padding, device=cmd.device), cmd], dim=1)
+            
         # attention mask 
         attention_mask = create_attention_mask(batch_size, self.max_sequence_len, pad_length, cmd)
     
@@ -221,17 +249,21 @@ class ImageTransformer(nn.Module):
 
         #add positional encoding
         combined_features += self.positional_encoding
+        combined_features = combined_features.transpose(0,1)
 
-        # Pass through transformer
-        if batched == False:
+        if batched == False: # unbatch for single items
             combined_features.squeeze(0)
+            attention_mask.squeeze(0)
+        
+        # Pass through transformer
         transformer_output = self.transformer_encoder(combined_features, src_key_padding_mask=attention_mask)
-
+        
         return transformer_output
 
 class ActionLSTM(nn.Module):
     """
     This LSTM model will be used to capture the patterns in the actions for use in prediction alongside images.
+    It can take any number of sequence length, allowing unlimited long term dependencies and capturing changes over time.
 
     A LSTM is good at 'forgetting' information that is no longer relevant. ex. traveling in a straight line down a hallway
     """
@@ -241,6 +273,7 @@ class ActionLSTM(nn.Module):
         self.lstm = nn.LSTM(input_size=num_actions, hidden_size=hidden_size, num_layers=num_layers, batch_first=True)
     
     def forward(self, cmd):
+        cmd = cmd.float()
         _, (final_layer, _) = self.lstm(cmd)
         return final_layer[-1] # Return the hidden state from the last layer
 
@@ -260,11 +293,35 @@ class CNNFeatureExtractor(nn.Module):
 
     
     def forward(self, imgs):
-        # Extract features
-        features = self.feature_extractor(imgs)
-        features = torch.flatten(features, start_dim=1)
+        original_dim = imgs.dim()
+        while imgs.dim() < 5:
+            imgs.unsqueeze(0)
+       
+        batch_size, seq_len, c, h, w = imgs.size()
+        
+        # reshape to treat the sequence as part of the batch
+        imgs_reshaped = imgs.view(batch_size * seq_len, c, h, w)
+        
+        # Remove extra channels
+        imgs_reshaped = imgs_reshaped[:,:3,:,:]
+        
+        # process batch through the CNN
+        extracted_features = self.feature_extractor(imgs_reshaped)
+        
+        #flatten
+        features_flat = torch.flatten(extracted_features, start_dim=1)
+        
+        # return batch dimension
+        features = features_flat.view(batch_size, seq_len, -1)
+
+        # Adjust features to match original input dimensions
+        if original_dim == 3:  # Single image [C, H, W]
+            features = features.squeeze(0).squeeze(0)  # Remove batch and sequence dimensions
+        elif original_dim == 4:  # Sequence of images [B, C, H, W]
+            features = features.squeeze(0)  # Remove Batch dimension
         
         return features
+
 
 def create_positional_encoding(seq_length, d_model):
     position = np.arange(seq_length)[:, np.newaxis]
