@@ -20,7 +20,7 @@ from fastai.losses import CrossEntropyLossFlat
 from fastai.vision.augment import Resize
 from fastai.vision.data import ImageDataLoaders
 from fastai.vision.learner import Learner, accuracy, vision_learner
-from fastai.vision.models import resnet18, ResNet18_Weights
+from fastai.vision.models import resnet18
 from fastai.vision.utils import get_image_files
 
 
