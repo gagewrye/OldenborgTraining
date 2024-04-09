@@ -1,29 +1,25 @@
-import utils
+from utils import create_attention_mask, create_positional_encoding
 import torch
 import torch.nn.functional as F
-from fastai.vision.models import resnet18, resnet34
+from torchvision.models import resnet18, ResNet18_Weights
 from torch import nn
 from torch.nn import TransformerEncoder, TransformerEncoderLayer
-
-
-# NOTE: we can change/add to this list
-compared_models = {"resnet18": resnet18, "resnet34": resnet34}
+from PIL import Image
 
 class ImageCommandModel(nn.Module):
     """Initializes the CommandModel class."""
 
-    def __init__(self, architecture_name: str, pretrained: bool):
+    def __init__(self):
         super(ImageCommandModel, self).__init__()
-        cnn_constructor = compared_models[architecture_name]
-        weights = "IMAGENET1K_V1" if pretrained else None
-        self.cnn = cnn_constructor(weights=weights)
-
+        
+        self.cnn = resnet18(weights=ResNet18_Weights.DEFAULT)
+        
         # Layers to combine image and command input
         self.fc1 = nn.Linear(self.cnn.fc.out_features + 1, 512)
         self.r1 = nn.ReLU(inplace=True)
         self.fc2 = nn.Linear(512, 3)
 
-    def forward(self, img, cmd):
+    def forward(self, img: Image, cmd: torch.tensor):
         """Performs a forward pass through the model."""
 
         # Pass the image data to the cnn
@@ -43,18 +39,11 @@ class ImageCommandModel(nn.Module):
 
         # The loss function applies softmax to the output of the model
         return x
-
+    
+# NOTE: Untested, leaving here in case we want to compare architectures
 class ImageActionTransformer(nn.Module):
     """
     This is our big transformer model! It takes a list of images and their corresponding actions to make a prediction.
-
-    Parameters:
-        num_encoder_layers (int): Number of encoder layers in the transformer.
-        nhead (int): Number of heads in the multiheadattention models.
-        d_model (int): Dimension of the input image features to the transformer. Resnet-18 gives 512
-        dim_feedforward (int): Dimension of the feedforward network model.
-        dropout (float): Dropout value.
-        num_actions (int): Number of possible actions.
     """
     def __init__(self, num_encoder_layers, nhead, d_model, dim_feedforward, dropout, num_actions):
         super(ImageActionTransformer, self).__init__()
@@ -69,17 +58,7 @@ class ImageActionTransformer(nn.Module):
         # Output Layer
         self.output_layer = nn.Linear(d_model, self.actions)
    
-    def forward(self, img, cmd):
-        """
-        Performs a forward pass through the model.
-        
-        Parameters:
-            img (PIL image or numpy array): A batch of images.
-            cmd (Tensor): A batch of one hot encoded vectors representing discrete actions.
-        Returns:
-            Tensor: The model's prediction for each image-action pair.
-                
-        """
+    def forward(self, img: Image, cmd: torch.tensor):
         # Apply transformations and feature extraction to images
         img_features = self.cnn(img)
 
@@ -99,11 +78,11 @@ class ImageActionTransformer(nn.Module):
 
 class HybridModel(nn.Module):
     """
-    This model combines both the ImageTransformer and ActionLSTM. It is a more efficient approach
+    This model combines both the ImageTransformer with an action LSTM. It is a more efficient approach
     than just throwing all of the data into a really big transformer. It uses a small transformer
     with the same inner workings as the larger one, but it has a maximum sequence cutoff that limits
     how far back it looks for images. The long term dependencies necessary for exploration are captured 
-    by an lstm that only stores the actions that the robot took.
+    by an lstm that only processes the actions that the robot took.
 
     Large sequence sizes with small max sequence sizes will be the best combo, since the sequence contains the 
     long term dependicies for the lstm
@@ -127,15 +106,14 @@ class HybridModel(nn.Module):
         super(HybridModel, self).__init__()
         self.transformer = ImageTransformer(num_encoder_layers=num_encoder_layers, nhead=nhead, 
                                             d_model=d_model, dim_feedforward=dim_feedforward, dropout=dropout, 
-                                            num_actions=num_actions, max_sequence_len=max_sequence_len)
-        self.lstm = ActionLSTM(num_actions=num_actions, hidden_size=hidden_size_lstm, 
-                               num_layers=num_layers_lstm)
+                                            num_actions=num_actions, max_sequence_len=max_sequence_len, batch_first=True)
+        self.lstm = nn.LSTM(input_size=num_actions, hidden_size=hidden_size_lstm, num_layers=num_layers_lstm, batch_first=True)
         self.projection_layer = nn.Linear(hidden_size_lstm, d_model)
         self.weights_transformer = torch.nn.Parameter(torch.randn(d_model))
         self.weights_lstm = torch.nn.Parameter(torch.randn(d_model))
         self.output_layer = nn.Linear(d_model, num_actions)
     
-    def forward(self, batch):
+    def forward(self, batch: tuple[list[torch.tensor],list[torch.tensor]]):
         """
         Performs a forward pass through the model.
         
@@ -152,32 +130,28 @@ class HybridModel(nn.Module):
             commands.unsqueeze(0)
         
         # Push data through models and apply activations
-        transformer_out = self.transformer(images, commands) # [B x 512]
-        transformer_out = F.leaky_relu(transformer_out)
+        transformer_out = self.transformer(images, commands)
+        transformer_out = F.leaky_relu(transformer_out) # [B x 512]
         
-        lstm_out = self.lstm(commands) # [B x hidden_size_lstm]
-        lstm_out = F.leaky_relu(lstm_out)
-        
-        lstm_projection = self.projection_layer(lstm_out) # [B x 512]
-        lstm_projection = F.leaky_relu(lstm_projection)
+        _, (final_layer, _) = self.lstm(commands.float()) # Return the hidden state from the last layer of lstm
+        lstm_out = final_layer[-1] # [B x hidden_size_lstm]
+        lstm_projection = self.projection_layer(lstm_out) 
+        lstm_projection_relu = F.leaky_relu(lstm_projection) # [B x 512]
         
         # Weighted combination
-        merged_output = (transformer_out * self.weights_transformer.unsqueeze(0)) + (lstm_projection * self.weights_lstm.unsqueeze(0))
-        merged_output = F.relu(merged_output) # [B x 512]
+        merged_output = (transformer_out * self.weights_transformer.unsqueeze(0)) + (lstm_projection_relu * self.weights_lstm.unsqueeze(0))
+        merged_output_relu = F.relu(merged_output) # [B x 512]
         
         # Output Layer and softmax
-        output = self.output_layer(merged_output) # [B x 3]
-        
+        output = self.output_layer(merged_output_relu) # [B x 3]
         return output
 
 class ImageTransformer(nn.Module):
     """
     Transformer that processes only a small number of images relative to the
-    ImageActionTransformer. To be used in combination with ActionLSTM.
+    ImageActionTransformer.
 
-    Lower number of encoder layers, since we don't need as many long term dependencies.
-
-    We also implement a maximum sequence length to restrict the amount of images processed.
+    We implement a maximum sequence length to restrict the amount of images processed.
     """
     def __init__(self, num_encoder_layers, nhead, d_model, dim_feedforward,
                   dropout, num_actions, max_sequence_len):
@@ -188,7 +162,7 @@ class ImageTransformer(nn.Module):
         self.cmd_projection = nn.Linear(num_actions, d_model)
 
         # Allows transformer to understand sequence of images
-        positional_encoding = utils.create_positional_encoding(max_sequence_len, d_model)
+        positional_encoding = create_positional_encoding(max_sequence_len, d_model)
         self.register_buffer('positional_encoding', positional_encoding)
 
         # Transformer Layers
@@ -200,7 +174,7 @@ class ImageTransformer(nn.Module):
         self.attention_pooling = AttentionPooling(512)
         
         # Output Layer
-        self.output_layer = nn.Linear(d_model, self.actions)
+        self.output_layer = nn.Linear(d_model, num_actions)
 
     def forward(self, img, cmd):
 
@@ -238,7 +212,7 @@ class ImageTransformer(nn.Module):
             cmd = torch.cat([torch.zeros(padding, device=cmd.device), cmd], dim=1)
             
         # attention mask 
-        attention_mask = utils.create_attention_mask(batch_size, self.max_sequence_len, pad_length, cmd)
+        attention_mask = create_attention_mask(batch_size, self.max_sequence_len, pad_length, cmd)
     
         # Combine image features and command embeddings
         img_features = self.cnn(img)
@@ -260,23 +234,26 @@ class ImageTransformer(nn.Module):
 
         return pooled_output
 
-class ActionLSTM(nn.Module):
-    """
-    This LSTM model will be used to capture the patterns in the actions for use in prediction alongside images.
-    It can take any number of sequence length, allowing unlimited long term dependencies and capturing changes over time.
 
-    A LSTM is good at 'forgetting' information that is no longer relevant. ex. traveling in a straight line down a hallway
-    """
-    def __init__(self, num_actions, hidden_size, num_layers):
-        super(ActionLSTM, self).__init__()
-        # LSTM Layers
-        self.lstm = nn.LSTM(input_size=num_actions, hidden_size=hidden_size, num_layers=num_layers, batch_first=True)
-    
-    def forward(self, cmd):
-        cmd = cmd.float()
-        _, (final_layer, _) = self.lstm(cmd)
-        return final_layer[-1] # Return the hidden state from the last layer
+class AttentionPooling(nn.Module):
+    def __init__(self, feature_dim):
+        super(AttentionPooling, self).__init__()
+        # Initialize a query vector that will be used to compute attention scores for each timestep
+        self.query = nn.Parameter(torch.randn(feature_dim, 1))
+        
+    def forward(self, x):
+        batch_size, sequence_length, feature_dim = x.size()
 
+        # Compute attention scores 
+        attn_scores = torch.matmul(x.view(-1, feature_dim), self.query).view(batch_size, sequence_length)
+        
+        # Apply softmax to get attention weights 
+        attn_weights = F.softmax(attn_scores, dim=1)
+        
+        # Use attention weights to compute a weighted sum of features across timesteps
+        weighted_sum = torch.sum(x * attn_weights.unsqueeze(-1), dim=1)  # Shape: [batch_size, feature_dim]
+        
+        return weighted_sum
 
 class CNNFeatureExtractor(nn.Module):
     """
@@ -288,7 +265,7 @@ class CNNFeatureExtractor(nn.Module):
         super(CNNFeatureExtractor, self).__init__()
         
         # Use ResNet18 for image feature extraction, remove the final layer to get feature vector
-        self.feature_extractor = resnet18(pretrained=True)
+        self.feature_extractor = resnet18(weights=ResNet18_Weights.DEFAULT)
         self.feature_extractor = nn.Sequential(*list(self.feature_extractor.children())[:-1])
 
     
@@ -321,23 +298,3 @@ class CNNFeatureExtractor(nn.Module):
             features = features.squeeze(0)  # Remove Batch dimension
         
         return features
-
-class AttentionPooling(nn.Module):
-    def __init__(self, feature_dim):
-        super(AttentionPooling, self).__init__()
-        # Initialize a query vector that will be used to compute attention scores for each timestep
-        self.query = nn.Parameter(torch.randn(feature_dim, 1))
-        
-    def forward(self, x):
-        batch_size, sequence_length, feature_dim = x.size()
-
-        # Compute attention scores 
-        attn_scores = torch.matmul(x.view(-1, feature_dim), self.query).view(batch_size, sequence_length)
-        
-        # Apply softmax to get attention weights 
-        attn_weights = F.softmax(attn_scores, dim=1)
-        
-        # Use attention weights to compute a weighted sum of features across timesteps
-        weighted_sum = torch.sum(x * attn_weights.unsqueeze(-1), dim=1)  # Shape: [batch_size, feature_dim]
-        
-        return weighted_sum

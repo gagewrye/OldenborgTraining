@@ -22,7 +22,7 @@ python upload_data.py PerfectStaticData TestingWorkflow "I am using this project
 
 # Trains the model
 # This should be run on a system with a GPU (e.g., our server)
-python training.py PerfectStaticModel TestingWorkflow "Testing training..." resnet18 PerfectStaticData
+python training.py PerfectStaticModel TestingWorkflow "Testing training..." PerfectStaticData
 
 # Performs inference
 # This will run on a system that can run Unreal Engine
