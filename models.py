@@ -173,9 +173,6 @@ class ImageTransformer(nn.Module):
         # Pool each sequence
         self.attention_pooling = AttentionPooling(512)
         
-        # Output Layer
-        self.output_layer = nn.Linear(d_model, num_actions)
-
     def forward(self, img, cmd):
 
         batched = False
@@ -294,7 +291,7 @@ class CNNFeatureExtractor(nn.Module):
         # Adjust features to match original input dimensions
         if original_dim == 3:  # Single image [C, H, W]
             features = features.squeeze(0).squeeze(0)  # Remove batch and sequence dimensions
-        elif original_dim == 4:  # Sequence of images [B, C, H, W]
+        elif original_dim == 4:  # Sequence of images [Seq, C, H, W]
             features = features.squeeze(0)  # Remove Batch dimension
         
         return features
